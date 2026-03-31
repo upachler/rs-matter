@@ -115,16 +115,17 @@ impl<'a> AstroMdnsResponder<'a> {
             self.matter.dev_det(),
             self.matter.port(),
             |service| {
-                let composite_service_type = if !service.service_subtypes.is_empty() {
-                    format!(
-                        "{}.{},{}",
-                        service.service,
-                        service.protocol,
-                        service.service_subtypes.join(",")
-                    )
-                } else {
-                    format!("{}.{}", service.service, service.protocol)
-                };
+                let composite_service_type =
+                    if !cfg!(target_os = "windows") && !service.service_subtypes.is_empty() {
+                        format!(
+                            "{}.{},{}",
+                            service.service,
+                            service.protocol,
+                            service.service_subtypes.join(",")
+                        )
+                    } else {
+                        format!("{}.{}", service.service, service.protocol)
+                    };
 
                 let mut builder = DNSServiceBuilder::new(&composite_service_type, service.port)
                     .with_name(service.name);
