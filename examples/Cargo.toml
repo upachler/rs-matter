@@ -53,7 +53,7 @@ embassy-sync = "0.7"
 embassy-time = { version = "0.5", features = ["std"] }
 embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 static_cell = "1"
-nix = { version = "0.27", features = ["net"] }
+
 async-io = "2"
 async-compat = "0.2"
 futures-lite = "2"
@@ -62,3 +62,9 @@ rand = { version = "0.8", features = ["std", "std_rng"] }
 async-signal = "0.2"
 socket2 = "0.5"
 async-executor = "1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["net"] }
+
+[target.'cfg(windows)'.dependencies]
+network-interface = "2.0"

@@ -610,6 +610,7 @@ fn create_mdns_socket() -> Result<async_io::Async<UdpSocket>, Error> {
 /// Returns `(ipv4_addr, ipv6_addr_opt, interface_index)`.
 /// Falls back to IPv4-only when no dual-stack interface is available.
 #[cfg(not(feature = "astro-dnssd"))]
+#[cfg(unix)]
 fn find_network_interface() -> Result<(std::net::Ipv4Addr, bool, u32), Error> {
     use nix::net::if_::InterfaceFlags;
     use nix::sys::socket::SockaddrIn6;
@@ -664,6 +665,69 @@ fn find_network_interface() -> Result<(std::net::Ipv4Addr, bool, u32), Error> {
     Ok((ip, ipv6_available, if_index))
 }
 
+#[cfg(not(feature = "astro-dnssd"))]
+#[cfg(windows)]
+fn find_network_interface() -> Result<(std::net::Ipv4Addr, bool, u32), Error> {
+    use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+
+    let ifaces = NetworkInterface::show().map_err(|_| {
+        warn!("Failed to enumerate network interfaces");
+        rs_matter::error::ErrorCode::NoNetworkInterface
+    })?;
+
+    // Prefer interface with both IPv4 and IPv6
+    let mut fallback: Option<(String, std::net::Ipv4Addr, u32)> = None;
+
+    for iface in &ifaces {
+        let is_loopback = iface.addr.iter().all(|a| match a {
+            Addr::V4(v4) => v4.ip.is_loopback(),
+            Addr::V6(v6) => v6.ip.is_loopback(),
+        });
+
+        if is_loopback || iface.addr.is_empty() {
+            continue;
+        }
+
+        let mut ipv4 = None;
+        let mut has_ipv6 = false;
+
+        for addr in &iface.addr {
+            match addr {
+                Addr::V4(v4) if !v4.ip.is_loopback() => {
+                    ipv4 = Some(v4.ip);
+                }
+                Addr::V6(v6) if !v6.ip.is_loopback() => {
+                    has_ipv6 = true;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(ip) = ipv4 {
+            if has_ipv6 {
+                info!(
+                    "Using network interface {} (index {}) with {} (IPv6: true)",
+                    iface.name, iface.index, ip
+                );
+                return Ok((ip, true, iface.index));
+            }
+            if fallback.is_none() {
+                fallback = Some((iface.name.clone(), ip, iface.index));
+            }
+        }
+    }
+
+    // Fallback to IPv4 only
+    if let Some((iname, ip, if_index)) = fallback {
+        info!("Using network interface {iname} (index {if_index}) with {ip} (IPv6: false)");
+        return Ok((ip, false, if_index));
+    }
+
+    warn!("Cannot find network interface suitable for mDNS");
+    Err(rs_matter::error::ErrorCode::NoNetworkInterface.into())
+}
+
+#[cfg(unix)]
 fn get_default_interface_index() -> Option<u32> {
     use nix::net::if_::InterfaceFlags;
 
@@ -689,6 +753,34 @@ fn get_default_interface_index() -> Option<u32> {
                 None
             }
         })
+}
+
+#[cfg(windows)]
+fn get_default_interface_index() -> Option<u32> {
+    use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+
+    let ifaces = NetworkInterface::show().ok()?;
+
+    for iface in &ifaces {
+        let is_loopback = iface.addr.iter().all(|a| match a {
+            Addr::V4(v4) => v4.ip.is_loopback(),
+            Addr::V6(v6) => v6.ip.is_loopback(),
+        });
+
+        if is_loopback || iface.addr.is_empty() {
+            continue;
+        }
+
+        let has_ipv6 = iface
+            .addr
+            .iter()
+            .any(|a| matches!(a, Addr::V6(v6) if !v6.ip.is_loopback()));
+        if has_ipv6 {
+            return Some(iface.index);
+        }
+    }
+
+    None
 }
 
 fn is_ipv6_link_local(addr: &std::net::Ipv6Addr) -> bool {

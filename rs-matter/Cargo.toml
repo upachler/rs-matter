@@ -198,6 +198,9 @@ zeroconf = { version = "0.15", optional = true }
 bitflags = "2"
 nix = { version = "0.30", features = ["net"] }
 
+[target.'cfg(windows)'.dependencies]
+network-interface = "2.0"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", features = ["bluetoothd"] }
 tokio = { version = "1", features = ["sync"] }
@@ -206,7 +209,6 @@ tokio-stream = { version = "0.1" }
 [dev-dependencies]
 log = "0.4"
 env_logger = "0.11"
-nix = { version = "0.30", features = ["net"] }
 socket2 = { version = "0.5", features = ["all"] }
 futures-lite = "2"
 async-channel = "2"
@@ -216,3 +218,9 @@ embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 trybuild = "1"
 tempfile = "3"
 async-io = "2"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.30", features = ["net"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+network-interface = "2.0"

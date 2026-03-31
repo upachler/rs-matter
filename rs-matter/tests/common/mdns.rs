@@ -81,6 +81,7 @@ async fn run_builtin_mdns<C: Crypto>(
 
     use rs_matter::transport::network::{Ipv4Addr, Ipv6Addr};
 
+    #[cfg(unix)]
     #[inline(never)]
     fn initialize_network() -> Result<(Ipv4Addr, Ipv6Addr, u32), Error> {
         use log::error;
@@ -121,6 +122,57 @@ async fn run_builtin_mdns<C: Crypto>(
         info!("Will use network interface {iname} with {ip}/{ipv6} for mDNS");
 
         Ok((ip.octets().into(), ipv6.octets().into(), 0 as _))
+    }
+
+    #[cfg(windows)]
+    #[inline(never)]
+    fn initialize_network() -> Result<(Ipv4Addr, Ipv6Addr, u32), Error> {
+        use log::error;
+        use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+        use rs_matter::error::ErrorCode;
+
+        let ifaces = NetworkInterface::show().map_err(|_| {
+            error!("Failed to enumerate network interfaces");
+            ErrorCode::StdIoError
+        })?;
+
+        for iface in &ifaces {
+            let mut ipv4 = None;
+            let mut ipv6 = None;
+            let is_loopback = iface.addr.iter().all(|a| match a {
+                Addr::V4(v4) => v4.ip.is_loopback(),
+                Addr::V6(v6) => v6.ip.is_loopback(),
+            });
+
+            if is_loopback || iface.addr.is_empty() {
+                continue;
+            }
+
+            for addr in &iface.addr {
+                match addr {
+                    Addr::V4(v4) if !v4.ip.is_loopback() => {
+                        ipv4 = Some(v4.ip);
+                    }
+                    Addr::V6(v6) if !v6.ip.is_loopback() => {
+                        ipv6 = Some(v6.ip);
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(ip), Some(ip6)) = (ipv4, ipv6) {
+                log::info!(
+                    "Will use network interface {} with {}/{} for mDNS",
+                    iface.name,
+                    ip,
+                    ip6
+                );
+                return Ok((ip.octets().into(), ip6.octets().into(), iface.index));
+            }
+        }
+
+        error!("Cannot find network interface suitable for mDNS broadcasting");
+        Err(ErrorCode::StdIoError.into())
     }
 
     let (ipv4_addr, ipv6_addr, interface) = initialize_network()?;

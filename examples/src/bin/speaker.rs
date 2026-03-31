@@ -37,7 +37,10 @@ use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TES
 use rs_matter::dm::devices::DEV_TYPE_SMART_SPEAKER;
 use rs_matter::dm::endpoints;
 use rs_matter::dm::events::DefaultEvents;
-use rs_matter::dm::networks::unix::UnixNetifs;
+#[cfg(unix)]
+use rs_matter::dm::networks::unix::UnixNetifs as PlatformNetifs;
+#[cfg(windows)]
+use rs_matter::dm::networks::windows::WindowsNetifs as PlatformNetifs;
 use rs_matter::dm::subscriptions::DefaultSubscriptions;
 use rs_matter::dm::{
     Async, AsyncHandler, AsyncMetadata, DataModel, Dataver, EmptyHandler, Endpoint, EpClMatcher,
@@ -195,7 +198,7 @@ fn dm_handler<'a, LH: LevelControlHooks, OH: OnOffHooks>(
         NODE,
         endpoints::with_eth(
             &(),
-            &UnixNetifs,
+            &PlatformNetifs,
             rand,
             endpoints::with_sys(
                 &false,

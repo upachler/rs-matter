@@ -37,7 +37,10 @@ use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TES
 use rs_matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
 use rs_matter::dm::endpoints::{self, EthHandler, SysHandler};
 use rs_matter::dm::events::NO_EVENTS;
-use rs_matter::dm::networks::unix::UnixNetifs;
+#[cfg(unix)]
+use rs_matter::dm::networks::unix::UnixNetifs as PlatformNetifs;
+#[cfg(windows)]
+use rs_matter::dm::networks::windows::WindowsNetifs as PlatformNetifs;
 use rs_matter::dm::subscriptions::DefaultSubscriptions;
 use rs_matter::dm::IMBuffer;
 use rs_matter::dm::{Async, DataModel, Dataver, EmptyHandler, Endpoint, EpClMatcher, Node};
@@ -264,7 +267,7 @@ fn dm_handler<'a>(
 ) -> AppDmHandler<'a> {
     endpoints::with_eth(
         &(),
-        &UnixNetifs,
+        &PlatformNetifs,
         rand,
         endpoints::with_sys(
             &false,
