@@ -419,15 +419,58 @@ impl Session {
         nodeid_matches
             && dest_nodeid_matches
             && self.local_sess_id == rx_plain.sess_id
-            // Compare canonically: a dual-stack socket may report a peer as
-            // `::ffff:a.b.c.d` on receive while the session stored the plain
-            // `V4` address it was created with (or vice versa). Canonicalizing
-            // only the *comparison* (not the stored address) lets the two match
-            // without disturbing the address used for reply routing. See
-            // `Address::canonical`.
-            && self.peer_addr.canonical() == rx_peer.canonical()
+            && self.is_from_peer(rx_peer, rx_plain)
             && self.is_encrypted() == rx_plain.is_encrypted()
             && !self.reserved
+    }
+
+    /// Whether a message received from `rx_peer` can belong to this session, as far
+    /// as the peer's address is concerned.
+    ///
+    /// A peer may send the messages of one session from different addresses: e.g. a
+    /// Thread border router with several IPv6 addresses (Thread ULA, OMR, global) may
+    /// switch the source address between messages. The address is therefore only used
+    /// to identify a session where nothing else does:
+    /// - Encrypted sessions are identified by our local session ID, which is unique,
+    ///   and messages that don't belong to the session fail to decrypt.
+    /// - Unencrypted sessions in which we are the responder are identified by the
+    ///   initiator's ephemeral node ID, which it sends as source node ID in every
+    ///   message (spec: Unsecured Session Context).
+    /// - Unencrypted sessions we initiated (`local_nodeid != 0`) keep matching by
+    ///   address, since a commissioner may have several of them to different peers.
+    fn is_from_peer(&self, rx_peer: &Address, rx_plain: &PlainHdr) -> bool {
+        if self.is_encrypted() {
+            return true;
+        }
+
+        if self.local_nodeid == 0 {
+            if let (Some(peer_nodeid), Some(src_nodeid)) =
+                (self.peer_nodeid, rx_plain.get_src_nodeid())
+            {
+                return peer_nodeid == src_nodeid;
+            }
+        }
+
+        // Compare canonically: a dual-stack socket may report a peer as
+        // `::ffff:a.b.c.d` on receive while the session stored the plain
+        // `V4` address it was created with (or vice versa). Canonicalizing
+        // only the *comparison* (not the stored address) lets the two match
+        // without disturbing the address used for reply routing. See
+        // `Address::canonical`.
+        self.peer_addr.canonical() == rx_peer.canonical()
+    }
+
+    /// Update the peer's address to the one a message of this session was just
+    /// received from (and, for encrypted sessions, successfully decrypted), so that
+    /// replies go where the peer currently is.
+    pub(crate) fn update_peer_addr(&mut self, rx_peer: Address) {
+        if self.peer_addr.canonical() != rx_peer.canonical() {
+            info!(
+                "Session {}: peer address changed from {} to {}",
+                self.id, self.peer_addr, rx_peer
+            );
+            self.peer_addr = rx_peer;
+        }
     }
 
     pub(crate) fn is_for_tx(&self, session_id: u32) -> bool {
@@ -2144,6 +2187,72 @@ mod tests {
     /// Stand-in `BasicInfoConfig` for tests that don't care about the
     /// peer-MRP defaults — `Sessions::add` only reads `sai`/`sii` from it.
     const TEST_DEV_DET: BasicInfoConfig<'static> = BasicInfoConfig::new();
+
+    /// A UDP peer address with the given (hex) last IPv6 group, e.g. different
+    /// addresses of the same multi-homed peer
+    fn udp_peer(last: u16) -> Address {
+        use core::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+
+        Address::Udp(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, last),
+            52350,
+            0,
+            0,
+        )))
+    }
+
+    fn plain_hdr(sess_id: u16, src_nodeid: Option<u64>) -> PlainHdr {
+        let mut hdr = PlainHdr::default();
+        hdr.sess_id = sess_id;
+        hdr.set_src_nodeid(src_nodeid);
+        hdr
+    }
+
+    /// An initiator (e.g. a Thread border router) may send the messages of a PASE /
+    /// CASE handshake from different source addresses; the unsecured session in
+    /// which we are the responder is identified by its ephemeral node ID.
+    #[test]
+    fn unsecured_responder_session_follows_peer_address_change() {
+        const INITIATOR: u64 = 0x3a84_2023_1e3a_d91f;
+
+        let mut sm = Sessions::new();
+        unwrap!(sm.add(1, false, udp_peer(1), Some(INITIATOR), &TEST_DEV_DET));
+
+        // next message of the handshake, from another address of the same peer
+        let session = unwrap!(sm.get_for_rx(&udp_peer(2), &plain_hdr(0, Some(INITIATOR))));
+        session.update_peer_addr(udp_peer(2));
+        assert_eq!(session.get_peer_addr(), udp_peer(2));
+
+        // another initiator is not mistaken for this one, whatever its address
+        assert!(sm
+            .get_for_rx(&udp_peer(2), &plain_hdr(0, Some(INITIATOR + 1)))
+            .is_none());
+    }
+
+    /// Encrypted sessions are identified by the local session ID (and authenticated
+    /// by decryption), not by the peer's address.
+    #[test]
+    fn encrypted_session_follows_peer_address_change() {
+        let mut sm = Sessions::new();
+        let session = unwrap!(sm.add(1, false, udp_peer(1), None, &TEST_DEV_DET));
+        session.mode = SessionMode::Pase { fab_idx: 0 };
+        session.set_local_sess_id(5);
+
+        assert!(sm.get_for_rx(&udp_peer(2), &plain_hdr(5, None)).is_some());
+        assert!(sm.get_for_rx(&udp_peer(2), &plain_hdr(6, None)).is_none());
+    }
+
+    /// Unsecured sessions we initiated (as a commissioner) are still matched by
+    /// address, since there may be several of them to different peers.
+    #[test]
+    fn unsecured_initiator_session_matches_by_address() {
+        let mut sm = Sessions::new();
+        let session = unwrap!(sm.add(1, false, udp_peer(1), Some(0x1234), &TEST_DEV_DET));
+        session.set_local_nodeid(0x5678);
+
+        assert!(sm.get_for_rx(&udp_peer(1), &plain_hdr(0, Some(0x1234))).is_some());
+        assert!(sm.get_for_rx(&udp_peer(2), &plain_hdr(0, Some(0x1234))).is_none());
+    }
 
     #[test]
     fn test_next_sess_id_doesnt_reuse() {

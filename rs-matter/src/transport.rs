@@ -1993,6 +1993,10 @@ impl<'a, C: Crypto> TransportRunner<'a, C> {
                     session.decode_remaining(&self.crypto, &mut packet.header, pb)?;
                 set_payload(packet, payload_range);
 
+                // The peer may have sent this message from a different address
+                // than the previous ones (see `Session::is_from_peer`)
+                session.update_peer_addr(packet.peer);
+
                 return session.post_recv(&packet.header);
             }
 
